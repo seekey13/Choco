@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "current_color": "yellow",
+  "model_ids": {
+    "yellow": 284,
+    "black": 285,
+    "red": 286,
+    "blue": 287,
+    "green": 288
+  }
+}
