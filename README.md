@@ -109,10 +109,12 @@ You can manually edit this file if needed. The format is:
 
 ## How It Works
 
-1. **Mount Detection**: The addon monitors your character's status effects (buffs) for status ID 85, which indicates you are mounted
-2. **Model Application**: When mounting is detected, the addon executes `/setmodel self <id>` using the model ID for your selected color
+1. **Mount Detection**: The addon monitors your character's status effects (buffs) for status ID 85, which specifically indicates you are riding a chocobo mount
+2. **Model Application**: When chocobo mounting is detected, the addon executes `/setmodel self <id>` using the model ID for your selected color
 3. **Model Reset**: When dismounting is detected, the addon executes `/setmodel self 0` to reset your model to default
 4. **Visual Only**: The `/setmodel` command only changes how your character appears on your client - it does not modify files or affect what other players see
+
+**Note**: Status ID 85 is specific to chocobo mounts. This addon is designed to work with chocobo mounts and may not activate with other mount types.
 
 ## Important Notes
 

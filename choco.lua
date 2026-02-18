@@ -32,10 +32,14 @@ local choco = {
     is_mounted = false,             -- Current mount state
     model_ids = default_models,     -- Model IDs (can be customized)
     settings_path = nil,            -- Path to settings file
+    last_check = 0,                 -- Last time we checked mount state (for throttling)
 };
 
 -- Mount status effect ID (85 = Chocobo mount)
 local MOUNT_STATUS_ID = 85;
+
+-- Check mount state every N seconds to reduce CPU usage
+local MOUNT_CHECK_INTERVAL = 0.1; -- Check 10 times per second
 
 --[[
 * Loads addon settings from file
@@ -62,7 +66,12 @@ local function load_settings()
         return;
     end
     
-    local s = json.decode(content);
+    local success, s = pcall(json.decode, content);
+    if (not success) then
+        print(chat.header(addon.name):append(chat.error('Failed to parse settings file. Using defaults.')));
+        return;
+    end
+    
     if (s ~= nil) then
         if (s.enabled ~= nil) then choco.enabled = s.enabled; end
         if (s.current_color ~= nil) then choco.current_color = s.current_color; end
@@ -319,6 +328,10 @@ end);
 * Called every frame when the scene is being rendered
 --]]
 ashita.events.register('d3d_present', 'present_cb', function ()
-    -- Check mount state periodically
-    update_mount_state();
+    -- Throttle mount state checks to reduce CPU usage
+    local current_time = os.clock();
+    if (current_time - choco.last_check >= MOUNT_CHECK_INTERVAL) then
+        choco.last_check = current_time;
+        update_mount_state();
+    end
 end);
