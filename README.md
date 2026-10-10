@@ -8,7 +8,7 @@ Drop `Choco.lua` in `Ashita/addons/Choco/`, then `/addon load Choco`.
 
 ## Usage
 
-Load it and ride your Raptor (`/mount Raptor`, or `/ride Raptor`). By default it's a plain yellow chocobo.
+Load it and ride your Raptor (`/mount Raptor`, or `/ride Raptor`). By default it's Random: a new look every update.
 
 | Command | Does |
 | --- | --- |
@@ -18,7 +18,7 @@ Load it and ride your Raptor (`/mount Raptor`, or `/ride Raptor`). By default it
 | `/choco random` | Rolls a new look (any color or Noble, plus beak, talons and tail) for every packet. Picking a color switches back. |
 | `/choco beak` / `talons` / `tail` | Turns the large beak, large talons or full tail on or off. |
 
-The window has the same settings: a row of buttons (the colors, Noble, Random), then the beak, talons and tail checkboxes. The picked button has the normal color and the rest are gray. With Noble or Random picked, the checkboxes are greyed out, and hovering one says why. At the bottom, a button runs `/mount Raptor` when you're on foot and `/dismount` when you're mounted.
+The window has the same settings: a row of buttons (Random, the colors, Noble), then the beak, talons and tail checkboxes. The picked button has the normal color and the rest are gray. With Noble or Random picked, the checkboxes are greyed out, and hovering one says why. At the bottom, a button runs `/mount Raptor` when you're on foot and `/dismount` when you're mounted.
 
 Your look is saved per character. A change shows from your next mount or zone.
 
