@@ -19,16 +19,18 @@ local RAPTOR, CHOCOBO, NOBLE = 2, 0, 34
 local STATUS_MOUNT, STATUS_CHOCOBO = 85, 5
 -- Personal chocobo color, CustomProperties bits 9-11 (LandSandBoat xi.chocoboRaising.color).
 local COLORS = { yellow = 0, black = 1, blue = 2, red = 3, green = 4 }
-local COLOR_ORDER = { 'yellow', 'black', 'blue', 'red', 'green' }
-local PARTS = { { 'beak', 'Large beak' }, { 'talons', 'Large talons' }, { 'tail', 'Full tail' }, { 'noble', 'Noble Chocobo (armored)' } }
+-- Window's top row: the colors, then Noble (its own fixed model, so it sits with the colors).
+local SWATCHES = { 'yellow', 'black', 'blue', 'red', 'green', 'noble' }
+local PARTS = { { 'beak', 'Large beak' }, { 'talons', 'Large talons' }, { 'tail', 'Full tail' } }
 local MOUNTED_BUFF = 252
+-- ponytail: hardcoded highlight (ImGui dark ButtonActive); read the style if a theme ever matters.
+local SELECTED = { 0.06, 0.53, 0.98, 1.0 }
 
 local look = settings.load(T{ color = 'yellow', beak = false, talons = false, tail = false, noble = false })
 settings.register('settings', 'settings_update', function (s) look = s end)
 
 -- 0x00A (zone-in) carries our status but no mount id, so remember it from 0x037.
 local on_raptor = false
-local last_mount = nil -- last mount id the server sent for us, for /choco
 local sync = nil       -- last real 0x067 about us, replayed on mount (server only sends it at zone-in)
 local ui_open = { false }
 
@@ -78,8 +80,7 @@ end
 
 -- 0x037 our status: Chocobo_Index 0x29 bits 5-7, status 0x30, mount id 0x5B (0 unless mounted).
 local function swap_self(p)
-    last_mount = p[0x5B]
-    on_raptor = last_mount == RAPTOR
+    on_raptor = p[0x5B] == RAPTOR
     if not on_raptor then return end
     p[0x5B] = look.noble and NOBLE or CHOCOBO
     if p[0x30] == STATUS_MOUNT then
@@ -142,7 +143,7 @@ do
     p = pkt{ [0x1F] = 85 }
     swap_zone_in(p)
     assert(p[0x1F] == 5, 'swap_zone_in: raptor not swapped')
-    look, on_raptor, last_mount = saved, false, nil
+    look, on_raptor = saved, false
 end
 
 local function my_id()
@@ -177,11 +178,22 @@ ashita.events.register('packet_in', 'packet_in_cb', function (e)
 end)
 
 local function look_text()
+    if look.noble then return 'noble' end
     local t = { look.color }
     for _, part in ipairs(PARTS) do
         if look[part[1]] then t[#t + 1] = part[1] end
     end
     return table.concat(t, ', ')
+end
+
+-- Colors and Noble are one choice: picking a color turns Noble off.
+local function pick(swatch)
+    if swatch == 'noble' then
+        look.noble = true
+    else
+        look.color, look.noble = swatch, false
+    end
+    settings.save()
 end
 
 -- ponytail: buff array is fixed at 32 slots; same check as the Ride addon.
@@ -194,43 +206,48 @@ local function is_mounted()
     return false
 end
 
--- Server only sends 0x037 on a status change, so loading while mounted leaves this empty.
-local function status_text()
-    if last_mount == nil then return 'No status from the server since load. Dismount and remount.' end
-    return ('Server mount id: %d (Raptor = %d)%s'):format(last_mount, RAPTOR, on_raptor and ' - showing chocobo' or '')
-end
+local function label(s) return s:sub(1, 1):upper() .. s:sub(2) end
 
 ashita.events.register('d3d_present', 'present_cb', function ()
     if not ui_open[1] then return end
     if imgui.Begin('Choco', ui_open, ImGuiWindowFlags_AlwaysAutoResize) then
-        imgui.Text('Color')
-        for i, c in ipairs(COLOR_ORDER) do
+        -- Every swatch button is as wide as the longest label.
+        local w = 0
+        for _, s in ipairs(SWATCHES) do w = math.max(w, imgui.CalcTextSize(label(s))) end
+        local selected = look.noble and 'noble' or look.color
+        for i, s in ipairs(SWATCHES) do
             if i > 1 then imgui.SameLine() end
-            if imgui.RadioButton(c:sub(1, 1):upper() .. c:sub(2), look.color == c) then
-                look.color = c
-                settings.save()
-            end
+            if s == selected then imgui.PushStyleColor(ImGuiCol_Button, SELECTED) end
+            if imgui.Button(label(s), { w + 16, 0 }) then pick(s) end
+            if s == selected then imgui.PopStyleColor() end
         end
-        for _, part in ipairs(PARTS) do
+        -- ImGui 1.80 has no BeginDisabled: fade the checkboxes and drop their clicks instead.
+        if look.noble then imgui.PushStyleVar(ImGuiStyleVar_Alpha, 0.5) end
+        for i, part in ipairs(PARTS) do
+            if i > 1 then imgui.SameLine() end
             local v = { look[part[1]] == true }
-            if imgui.Checkbox(part[2], v) then
+            if imgui.Checkbox(part[2], v) and not look.noble then
                 look[part[1]] = v[1]
                 settings.save()
             end
+            if look.noble and imgui.IsItemHovered() then
+                imgui.SetTooltip('The Noble Chocobo has one fixed look.\nThe game ignores beak, talons and tail on it.')
+            end
         end
+        if look.noble then imgui.PopStyleVar() end
         imgui.TextDisabled('Changes show from the next mount or zone.')
-        imgui.Separator()
         -- Both labels share the /dismount width so the button doesn't jump when it flips.
         local cmd = is_mounted() and '/dismount' or '/mount'
-        if imgui.Button(cmd, { imgui.CalcTextSize('/dismount') + 16, 0 }) then
+        local bw = imgui.CalcTextSize('/dismount') + 16
+        imgui.SetCursorPosX((imgui.GetWindowWidth() - bw) * 0.5)
+        if imgui.Button(cmd, { bw, 0 }) then
             AshitaCore:GetChatManager():QueueCommand(1, cmd == '/mount' and '/mount Raptor' or cmd)
         end
-        imgui.TextDisabled(status_text())
     end
     imgui.End()
 end)
 
--- /choco toggles the window. /choco <color> sets the color; /choco beak|talons|tail|noble toggles that part.
+-- /choco toggles the window. /choco <color|noble> picks the look; /choco beak|talons|tail toggles that part.
 ashita.events.register('command', 'command_cb', function (e)
     local args = e.command:args()
     if #args == 0 or args[1]:lower() ~= '/choco' then return end
@@ -241,17 +258,15 @@ ashita.events.register('command', 'command_cb', function (e)
         return
     end
     local msg
-    if COLORS[arg] then
-        look.color = arg
-    elseif arg == 'beak' or arg == 'talons' or arg == 'tail' or arg == 'noble' then
+    if COLORS[arg] or arg == 'noble' then
+        pick(arg)
+    elseif arg == 'beak' or arg == 'talons' or arg == 'tail' then
         look[arg] = not look[arg]
-    else
-        msg = 'Usage: /choco [yellow|black|blue|red|green|beak|talons|tail|noble]'
-    end
-    if msg == nil then
         settings.save()
-        msg = ('Look: %s. Shows from the next mount or zone.'):format(look_text())
+    else
+        msg = 'Usage: /choco [yellow|black|blue|red|green|noble|beak|talons|tail]'
     end
+    msg = msg or ('Look: %s. Shows from the next mount or zone.'):format(look_text())
     print(chat.header(addon.name):append(chat.message(msg)))
 end)
 

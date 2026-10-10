@@ -14,10 +14,10 @@ Load it and ride your Raptor (`/mount Raptor`, or `/ride Raptor`). By default it
 | --- | --- |
 | `/choco` | Opens or closes the settings window. |
 | `/choco yellow` / `black` / `blue` / `red` / `green` | Sets the color. |
+| `/choco noble` | Picks the armored Noble Chocobo. Picking a color switches back. |
 | `/choco beak` / `talons` / `tail` | Turns the large beak, large talons or full tail on or off. |
-| `/choco noble` | Turns the armored Noble Chocobo on or off. |
 
-The window has the same settings, plus a button that runs `/mount Raptor` when you're on foot and `/dismount` when you're mounted. At the bottom it shows the mount id the server last sent for you (Raptor is `2`).
+The window has the same settings: a row of color buttons ending in Noble, then the beak, talons and tail checkboxes. With Noble picked, the checkboxes are greyed out, because the Noble has one fixed look. At the bottom, a button runs `/mount Raptor` when you're on foot and `/dismount` when you're mounted.
 
 Your look is saved per character. A change shows from your next mount or zone.
 
@@ -50,5 +50,6 @@ It rewrites four packets:
 - **Your own look needs one zone after loading.** Choco only gets the `0x067` copy it resends at zone-in. If you load it mid-session, zone once.
 - **Your client thinks you're on a chocobo.** Status reads `5` (Chocobo) instead of `85` (Mount), so another addon that checks for status `85` won't see you as mounted. The Mounted buff, which `Ride` uses, is unchanged.
 - **The music isn't changed.** You still hear the mount theme, not the chocobo theme. `NoMount` still mutes it.
-- **If you still see a Raptor:** mount it and open `/choco`. A server mount id other than `2` means this server numbers Raptor differently. Change `RAPTOR` at the top of `Choco.lua` to that number.
+- **The Noble ignores beak, talons, tail and color.** It's a fixed model, and the server never sends a look for it.
+- **If you still see a Raptor:** this server may number Raptor differently. With `PacketLogger`, mount up and read byte `0x5B` of your `0x037`. If it isn't `2`, change `RAPTOR` at the top of `Choco.lua` to that number.
 - Packet layouts: [atom0s/XiPackets](https://github.com/atom0s/XiPackets). Mount and look values: LandSandBoat `mountutils.h`, `mountutils.cpp`, `scripts/enum/mount.lua` and `scripts/enum/chocobo_raising.lua`.
