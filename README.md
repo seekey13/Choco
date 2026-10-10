@@ -12,10 +12,12 @@ Load it and ride your Raptor (`/mount Raptor`, or `/ride Raptor`). By default it
 
 | Command | Does |
 | --- | --- |
-| `/choco` | Shows your look and the mount id the server last sent for you. Raptor is `2`. |
+| `/choco` | Opens or closes the settings window. |
 | `/choco yellow` / `black` / `blue` / `red` / `green` | Sets the color. |
 | `/choco beak` / `talons` / `tail` | Turns the large beak, large talons or full tail on or off. |
 | `/choco noble` | Turns the armored Noble Chocobo on or off. |
+
+The window has the same settings, plus a button that runs `/mount Raptor` when you're on foot and `/dismount` when you're mounted. At the bottom it shows the mount id the server last sent for you (Raptor is `2`).
 
 Your look is saved per character. A change shows from your next mount or zone.
 
@@ -48,5 +50,5 @@ It rewrites four packets:
 - **Your own look needs one zone after loading.** Choco only gets the `0x067` copy it resends at zone-in. If you load it mid-session, zone once.
 - **Your client thinks you're on a chocobo.** Status reads `5` (Chocobo) instead of `85` (Mount), so another addon that checks for status `85` won't see you as mounted. The Mounted buff, which `Ride` uses, is unchanged.
 - **The music isn't changed.** You still hear the mount theme, not the chocobo theme. `NoMount` still mutes it.
-- **If you still see a Raptor:** mount it and run `/choco`. Anything other than `2` means this server numbers Raptor differently. Change `RAPTOR` at the top of `Choco.lua` to that number.
+- **If you still see a Raptor:** mount it and open `/choco`. A server mount id other than `2` means this server numbers Raptor differently. Change `RAPTOR` at the top of `Choco.lua` to that number.
 - Packet layouts: [atom0s/XiPackets](https://github.com/atom0s/XiPackets). Mount and look values: LandSandBoat `mountutils.h`, `mountutils.cpp`, `scripts/enum/mount.lua` and `scripts/enum/chocobo_raising.lua`.

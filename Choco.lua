@@ -10,6 +10,7 @@ require('common')
 local bit = require('bit')
 local ffi = require('ffi')
 local chat = require('chat')
+local imgui = require('imgui')
 local settings = require('settings')
 
 -- Packet mount ids are the /mount list index + 1 (Raptor is list index 1); chocobo is 0.
@@ -18,6 +19,9 @@ local RAPTOR, CHOCOBO, NOBLE = 2, 0, 34
 local STATUS_MOUNT, STATUS_CHOCOBO = 85, 5
 -- Personal chocobo color, CustomProperties bits 9-11 (LandSandBoat xi.chocoboRaising.color).
 local COLORS = { yellow = 0, black = 1, blue = 2, red = 3, green = 4 }
+local COLOR_ORDER = { 'yellow', 'black', 'blue', 'red', 'green' }
+local PARTS = { { 'beak', 'Large beak' }, { 'talons', 'Large talons' }, { 'tail', 'Full tail' }, { 'noble', 'Noble Chocobo (armored)' } }
+local MOUNTED_BUFF = 252
 
 local look = settings.load(T{ color = 'yellow', beak = false, talons = false, tail = false, noble = false })
 settings.register('settings', 'settings_update', function (s) look = s end)
@@ -26,6 +30,7 @@ settings.register('settings', 'settings_update', function (s) look = s end)
 local on_raptor = false
 local last_mount = nil -- last mount id the server sent for us, for /choco
 local sync = nil       -- last real 0x067 about us, replayed on mount (server only sends it at zone-in)
+local ui_open = { false }
 
 -- Look as the server sends it for a raised chocobo (LandSandBoat mountutils.h ChocoboCustomProperties):
 -- bit 0 large beak, bit 3 large talons, bit 6 full tail, bits 9-11 color.
@@ -173,42 +178,83 @@ end)
 
 local function look_text()
     local t = { look.color }
-    for _, k in ipairs({ 'beak', 'talons', 'tail', 'noble' }) do
-        if look[k] then t[#t + 1] = k end
+    for _, part in ipairs(PARTS) do
+        if look[part[1]] then t[#t + 1] = part[1] end
     end
     return table.concat(t, ', ')
 end
 
--- /choco: shows the look and what the server last sent for us.
--- /choco <color> sets the color; /choco beak|talons|tail|noble toggles that part.
+-- ponytail: buff array is fixed at 32 slots; same check as the Ride addon.
+local function is_mounted()
+    local buffs = AshitaCore:GetMemoryManager():GetPlayer():GetBuffs()
+    if not buffs then return false end
+    for i = 1, 32 do
+        if buffs[i] == MOUNTED_BUFF then return true end
+    end
+    return false
+end
+
+-- Server only sends 0x037 on a status change, so loading while mounted leaves this empty.
+local function status_text()
+    if last_mount == nil then return 'No status from the server since load. Dismount and remount.' end
+    return ('Server mount id: %d (Raptor = %d)%s'):format(last_mount, RAPTOR, on_raptor and ' - showing chocobo' or '')
+end
+
+ashita.events.register('d3d_present', 'present_cb', function ()
+    if not ui_open[1] then return end
+    if imgui.Begin('Choco', ui_open, ImGuiWindowFlags_AlwaysAutoResize) then
+        imgui.Text('Color')
+        for i, c in ipairs(COLOR_ORDER) do
+            if i > 1 then imgui.SameLine() end
+            if imgui.RadioButton(c:sub(1, 1):upper() .. c:sub(2), look.color == c) then
+                look.color = c
+                settings.save()
+            end
+        end
+        for _, part in ipairs(PARTS) do
+            local v = { look[part[1]] == true }
+            if imgui.Checkbox(part[2], v) then
+                look[part[1]] = v[1]
+                settings.save()
+            end
+        end
+        imgui.TextDisabled('Changes show from the next mount or zone.')
+        imgui.Separator()
+        -- Both labels share the /dismount width so the button doesn't jump when it flips.
+        local cmd = is_mounted() and '/dismount' or '/mount'
+        if imgui.Button(cmd, { imgui.CalcTextSize('/dismount') + 16, 0 }) then
+            AshitaCore:GetChatManager():QueueCommand(1, cmd == '/mount' and '/mount Raptor' or cmd)
+        end
+        imgui.TextDisabled(status_text())
+    end
+    imgui.End()
+end)
+
+-- /choco toggles the window. /choco <color> sets the color; /choco beak|talons|tail|noble toggles that part.
 ashita.events.register('command', 'command_cb', function (e)
     local args = e.command:args()
     if #args == 0 or args[1]:lower() ~= '/choco' then return end
     e.blocked = true
     local arg = (args[2] or ''):lower()
+    if arg == '' then
+        ui_open[1] = not ui_open[1]
+        return
+    end
     local msg
     if COLORS[arg] then
         look.color = arg
     elseif arg == 'beak' or arg == 'talons' or arg == 'tail' or arg == 'noble' then
         look[arg] = not look[arg]
-    elseif arg ~= '' then
+    else
         msg = 'Usage: /choco [yellow|black|blue|red|green|beak|talons|tail|noble]'
     end
-    if msg == nil and arg ~= '' then
+    if msg == nil then
         settings.save()
         msg = ('Look: %s. Shows from the next mount or zone.'):format(look_text())
-    elseif msg == nil then
-        -- Server only sends 0x037 on a status change, so loading while mounted leaves this empty.
-        msg = ('Look: %s. '):format(look_text())
-        if last_mount == nil then
-            msg = msg .. 'No status from the server since load. Dismount and remount, then try again.'
-        else
-            msg = msg .. ('Server mount id: %d (Raptor = %d)%s'):format(last_mount, RAPTOR, on_raptor and ' - showing chocobo' or '')
-        end
     end
     print(chat.header(addon.name):append(chat.message(msg)))
 end)
 
 ashita.events.register('load', 'load_cb', function ()
-    print(chat.header(addon.name):append(chat.message(('Loaded. Look: %s. Raptors show as chocobos from the next mount or zone.'):format(look_text()))))
+    print(chat.header(addon.name):append(chat.message(('Loaded. Look: %s. /choco opens the settings.'):format(look_text()))))
 end)
