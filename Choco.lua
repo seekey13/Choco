@@ -1,46 +1,73 @@
--- Choco - see the Raptor mount as a standard chocobo (client-side only)
+-- Choco - see the Raptor mount as a chocobo you pick the look of (client-side only)
 
 addon.name    = 'Choco'
 addon.author  = 'Seekey'
-addon.version = '1.0'
-addon.desc    = 'Shows the Raptor mount as a standard chocobo. Only your client sees it.'
+addon.version = '1.1'
+addon.desc    = 'Shows the Raptor mount as a chocobo, in the color and look you pick. Only your client sees it.'
 addon.link    = 'https://github.com/seekey13/Choco'
 
 require('common')
 local bit = require('bit')
 local ffi = require('ffi')
 local chat = require('chat')
+local settings = require('settings')
 
 -- Packet mount ids are the /mount list index + 1 (Raptor is list index 1); chocobo is 0.
-local RAPTOR, CHOCOBO = 2, 0
--- server_status (entity animation): a real chocobo rides as 5, every other mount as 85.
+local RAPTOR, CHOCOBO, NOBLE = 2, 0, 34
+-- server_status (entity animation): chocobos (Noble too) ride as 5, every other mount as 85.
 local STATUS_MOUNT, STATUS_CHOCOBO = 85, 5
+-- Personal chocobo color, CustomProperties bits 9-11 (LandSandBoat xi.chocoboRaising.color).
+local COLORS = { yellow = 0, black = 1, blue = 2, red = 3, green = 4 }
+
+local look = settings.load(T{ color = 'yellow', beak = false, talons = false, tail = false, noble = false })
+settings.register('settings', 'settings_update', function (s) look = s end)
 
 -- 0x00A (zone-in) carries our status but no mount id, so remember it from 0x037.
 local on_raptor = false
 local last_mount = nil -- last mount id the server sent for us, for /choco
+local sync = nil       -- last real 0x067 about us, replayed on mount (server only sends it at zone-in)
 
--- Swaps rewrite a raptor into exactly what the server sends for a regular chocobo:
--- status 5, ChocoboIndex 1, mount id 0. They edit a 0-based byte view in place
--- (ffi uint8_t* in game, plain table in the self-check).
--- Offsets: https://github.com/atom0s/XiPackets world/server/0x000A, 0x000D, 0x0037
-
--- ChocoboIndex is the top 3 bits of a byte; 1 = regular chocobo.
-local function set_chocobo_index(p, offset)
-    p[offset] = bit.bor(bit.band(p[offset], 0x1F), 0x20)
+-- Look as the server sends it for a raised chocobo (LandSandBoat mountutils.h ChocoboCustomProperties):
+-- bit 0 large beak, bit 3 large talons, bit 6 full tail, bits 9-11 color.
+local function look_props()
+    return bit.bor(look.beak and 0x01 or 0, look.talons and 0x08 or 0, look.tail and 0x40 or 0,
+        bit.lshift(COLORS[look.color] or 0, 9))
 end
 
--- 0x00D player update: status 0x1F, ChocoboIndex 0x20 bits 5-7, MountIndex 0x44 bits 4-11.
+-- ChocoboIndex: 1 rental, 2 raised (reads CustomProperties[0]), 4 Noble (CustomProperties[1] = 1).
+local function chocobo_index()
+    if look.noble then return 4 end
+    return look_props() == 0 and 1 or 2
+end
+
+-- Swaps rewrite a raptor into what the server sends for a chocobo with that look.
+-- They edit a 0-based byte view in place (ffi uint8_t* in game, plain table in the self-check).
+-- Offsets: https://github.com/atom0s/XiPackets world/server/0x000A, 0x000D, 0x0037, 0x0067
+
+local function put32(p, offset, v)
+    for i = 0, 3 do p[offset + i] = bit.band(bit.rshift(v, 8 * i), 0xFF) end
+end
+
+-- ChocoboIndex is the top 3 bits of a byte.
+local function set_chocobo_index(p, offset)
+    p[offset] = bit.bor(bit.band(p[offset], 0x1F), bit.lshift(chocobo_index(), 5))
+end
+
+-- 0x00D player update: status 0x1F, ChocoboIndex 0x20 bits 5-7, CustomProperties 0x34/0x38,
+-- MountIndex 0x44 bits 4-11.
 local function swap_pc(p)
     if bit.band(p[0x0A], 0x04) == 0 then return end -- no General block; client ignores these fields
     local mount = bit.bor(bit.rshift(p[0x44], 4), bit.lshift(bit.band(p[0x45], 0x0F), 4))
     if mount ~= RAPTOR then return end
-    -- Server keeps sending the id after dismount; make it chocobo (0) so the client never loads a raptor.
-    p[0x44] = bit.band(p[0x44], 0x0F)
-    p[0x45] = bit.band(p[0x45], 0xF0)
+    -- Server keeps sending the id after dismount; replace it so the client never loads a raptor.
+    local m = look.noble and NOBLE or CHOCOBO
+    p[0x44] = bit.bor(bit.band(p[0x44], 0x0F), bit.lshift(bit.band(m, 0x0F), 4))
+    p[0x45] = bit.bor(bit.band(p[0x45], 0xF0), bit.rshift(m, 4))
     if p[0x1F] == STATUS_MOUNT then
         p[0x1F] = STATUS_CHOCOBO
         set_chocobo_index(p, 0x20)
+        put32(p, 0x34, look_props())
+        put32(p, 0x38, look.noble and 1 or 0)
     end
 end
 
@@ -49,7 +76,7 @@ local function swap_self(p)
     last_mount = p[0x5B]
     on_raptor = last_mount == RAPTOR
     if not on_raptor then return end
-    p[0x5B] = CHOCOBO
+    p[0x5B] = look.noble and NOBLE or CHOCOBO
     if p[0x30] == STATUS_MOUNT then
         p[0x30] = STATUS_CHOCOBO
         set_chocobo_index(p, 0x29)
@@ -61,13 +88,22 @@ local function swap_zone_in(p)
     if on_raptor and p[0x1F] == STATUS_MOUNT then p[0x1F] = STATUS_CHOCOBO end
 end
 
+-- 0x067 mode 2 about us: CustomProperties 0x18/0x1C is the look of our own chocobo
+-- (0x037 has no such field; the client ignores these for other players).
+local function swap_sync(p)
+    put32(p, 0x18, look_props())
+    put32(p, 0x1C, look.noble and 1 or 0)
+end
+
 -- ponytail: self-check at load; fake packets, 0-based like the ffi view.
 do
+    local saved = look
     local function pkt(bytes)
         local p = {}
         for i = 0, 0x5F do p[i] = bytes[i] or 0 end
         return p
     end
+    look = { color = 'yellow' }
     -- Raptor rider: General flag, status 85, ChocoboIndex 3 + bit 0, GateId 3, MountIndex 2.
     local p = pkt{ [0x0A] = 0x04, [0x1F] = 85, [0x20] = 0x61, [0x44] = 0x23 }
     swap_pc(p)
@@ -80,6 +116,20 @@ do
     p = pkt{ [0x0A] = 0x01, [0x1F] = 85, [0x44] = 0x20 }
     swap_pc(p)
     assert(p[0x1F] == 85 and p[0x44] == 0x20, 'swap_pc: touched a packet without General')
+    -- Raised look: black (1 << 9) + beak + tail = 0x241, ChocoboIndex 2.
+    look = { color = 'black', beak = true, tail = true }
+    p = pkt{ [0x0A] = 0x04, [0x1F] = 85, [0x20] = 0x61, [0x44] = 0x23 }
+    swap_pc(p)
+    assert(p[0x20] == 0x41 and p[0x34] == 0x41 and p[0x35] == 0x02 and p[0x38] == 0, 'swap_pc: look not applied')
+    -- Noble: mount 34 (0x22) split across 0x44/0x45, ChocoboIndex 4, CustomProperties[1] = 1.
+    look = { color = 'yellow', noble = true }
+    p = pkt{ [0x0A] = 0x04, [0x1F] = 85, [0x20] = 0x61, [0x44] = 0x23 }
+    swap_pc(p)
+    assert(p[0x1F] == 5 and p[0x20] == 0x81 and p[0x44] == 0x23 and p[0x45] == 0x02 and p[0x38] == 1, 'swap_pc: noble not applied')
+    p = pkt{ [0x29] = 0x65, [0x30] = 85, [0x5B] = 2 }
+    swap_self(p)
+    assert(p[0x29] == 0x85 and p[0x30] == 5 and p[0x5B] == NOBLE, 'swap_self: noble not applied')
+    look = { color = 'yellow' }
     -- Us on raptor, then zoning.
     p = pkt{ [0x29] = 0x65, [0x30] = 85, [0x5B] = 2 }
     swap_self(p)
@@ -87,7 +137,20 @@ do
     p = pkt{ [0x1F] = 85 }
     swap_zone_in(p)
     assert(p[0x1F] == 5, 'swap_zone_in: raptor not swapped')
-    on_raptor, last_mount = false, nil
+    look, on_raptor, last_mount = saved, false, nil
+end
+
+local function my_id()
+    return AshitaCore:GetMemoryManager():GetParty():GetMemberServerId(0)
+end
+
+-- Our chocobo's look only arrives in 0x067, which the server doesn't send on mount: replay the last one.
+local function replay_sync()
+    if sync == nil then return end
+    local buf = ffi.new('uint8_t[?]', #sync)
+    ffi.copy(buf, sync, #sync)
+    swap_sync(buf)
+    AshitaCore:GetPacketManager():AddIncomingPacket(0x067, ffi.string(buf, #sync):totable())
 end
 
 ashita.events.register('packet_in', 'packet_in_cb', function (e)
@@ -95,24 +158,57 @@ ashita.events.register('packet_in', 'packet_in_cb', function (e)
     if e.id == 0x00D and e.size >= 0x48 then
         swap_pc(ffi.cast('uint8_t*', e.data_modified_raw))
     elseif e.id == 0x037 and e.size >= 0x5C then
+        local was = on_raptor
         swap_self(ffi.cast('uint8_t*', e.data_modified_raw))
+        if on_raptor and not was then replay_sync() end
     elseif e.id == 0x00A and e.size >= 0x20 then
         swap_zone_in(ffi.cast('uint8_t*', e.data_modified_raw))
+    elseif e.id == 0x067 and e.size >= 0x20 then
+        local p = ffi.cast('uint8_t*', e.data_modified_raw)
+        if bit.band(p[0x04], 0x3F) ~= 2 or ffi.cast('uint32_t*', p + 0x08)[0] ~= my_id() then return end
+        if not e.injected then sync = ffi.string(e.data_raw, e.size) end
+        if on_raptor then swap_sync(p) end
     end
 end)
 
--- /choco: shows what the server last sent for us, to confirm the Raptor id if the swap ever misses.
+local function look_text()
+    local t = { look.color }
+    for _, k in ipairs({ 'beak', 'talons', 'tail', 'noble' }) do
+        if look[k] then t[#t + 1] = k end
+    end
+    return table.concat(t, ', ')
+end
+
+-- /choco: shows the look and what the server last sent for us.
+-- /choco <color> sets the color; /choco beak|talons|tail|noble toggles that part.
 ashita.events.register('command', 'command_cb', function (e)
     local args = e.command:args()
     if #args == 0 or args[1]:lower() ~= '/choco' then return end
     e.blocked = true
-    local msg = 'No status from the server yet. Mount up, then try again.'
-    if last_mount ~= nil then
-        msg = ('Server mount id: %d (Raptor = %d)%s'):format(last_mount, RAPTOR, on_raptor and ' - showing chocobo' or '')
+    local arg = (args[2] or ''):lower()
+    local msg
+    if COLORS[arg] then
+        look.color = arg
+    elseif arg == 'beak' or arg == 'talons' or arg == 'tail' or arg == 'noble' then
+        look[arg] = not look[arg]
+    elseif arg ~= '' then
+        msg = 'Usage: /choco [yellow|black|blue|red|green|beak|talons|tail|noble]'
+    end
+    if msg == nil and arg ~= '' then
+        settings.save()
+        msg = ('Look: %s. Shows from the next mount or zone.'):format(look_text())
+    elseif msg == nil then
+        -- Server only sends 0x037 on a status change, so loading while mounted leaves this empty.
+        msg = ('Look: %s. '):format(look_text())
+        if last_mount == nil then
+            msg = msg .. 'No status from the server since load. Dismount and remount, then try again.'
+        else
+            msg = msg .. ('Server mount id: %d (Raptor = %d)%s'):format(last_mount, RAPTOR, on_raptor and ' - showing chocobo' or '')
+        end
     end
     print(chat.header(addon.name):append(chat.message(msg)))
 end)
 
 ashita.events.register('load', 'load_cb', function ()
-    print(chat.header(addon.name):append(chat.message('Loaded. Raptors show as chocobos from the next mount or zone.')))
+    print(chat.header(addon.name):append(chat.message(('Loaded. Look: %s. Raptors show as chocobos from the next mount or zone.'):format(look_text()))))
 end)
