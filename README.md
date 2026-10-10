@@ -46,7 +46,7 @@ It rewrites four packets:
 
 ## Notes
 
-- **Every Raptor changes, not just yours.** Other players riding a Raptor show as your chocobo on your screen too. Your own mount doesn't change for anyone else.
+- **Every Raptor changes, not just yours.** Other players riding a Raptor show as a chocobo on your screen too, in your look (or their own roll with Random). Your own mount doesn't change for anyone else.
 - **It starts on the next update.** A Raptor that is already out when you load the addon stays a Raptor until it remounts, zones or comes back into range.
 - **Your own look needs one zone after loading.** Choco only gets the `0x067` copy it resends at zone-in. If you load it mid-session, zone once.
 - **Your client thinks you're on a chocobo.** Status reads `5` (Chocobo) instead of `85` (Mount), so another addon that checks for status `85` won't see you as mounted. The Mounted buff, which `Ride` uses, is unchanged.
