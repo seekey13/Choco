@@ -18,9 +18,10 @@ local RAPTOR, CHOCOBO, NOBLE = 2, 0, 34
 -- server_status (entity animation): chocobos (Noble too) ride as 5, every other mount as 85.
 local STATUS_MOUNT, STATUS_CHOCOBO = 85, 5
 -- Personal chocobo color, CustomProperties bits 9-11 (LandSandBoat xi.chocoboRaising.color).
-local COLORS = { yellow = 0, black = 1, blue = 2, red = 3, green = 4 }
--- Window's top row: Random, which rolls one of the six looks after it (Noble is its own fixed model).
-local SWATCHES = { 'random', 'yellow', 'black', 'blue', 'red', 'green', 'noble' }
+-- Pink is a yellow body; look_props adds its pink/white beak and tail bits.
+local COLORS = { yellow = 0, black = 1, blue = 2, red = 3, green = 4, pink = 0 }
+-- Window's top row: Random, which rolls one of the seven looks after it (Noble is its own fixed model).
+local SWATCHES = { 'random', 'yellow', 'black', 'blue', 'red', 'green', 'pink', 'noble' }
 local PARTS = { { 'beak', 'Large beak' }, { 'talons', 'Large talons' }, { 'tail', 'Full tail' } }
 local MOUNTED_BUFF = 252
 local GRAY = { 0.3, 0.3, 0.3, 1.0 } -- unpicked swatches; the picked one keeps the default button color
@@ -40,6 +41,7 @@ local sync = nil       -- this zone's real 0x067 about us, replayed on mount (se
 local ride = nil       -- ours: 0x037 and 0x067 both use it
 local rides = {}       -- Random only: each other rider's roll, by server id
 local ui_open = { false }
+local raw = nil        -- /choco raw: forces the look bits on every swapped chocobo, for testing (not saved)
 
 -- LuaJIT starts every session on the same seed.
 math.randomseed(os.time())
@@ -55,10 +57,13 @@ end
 
 -- Look as the server sends it for a raised chocobo (LandSandBoat mountutils.h ChocoboCustomProperties):
 -- bit 0 large beak, bit 3 large talons, bit 6 full tail, bits 9-11 color. The server sends none for Noble.
+-- Found by testing: bit 1 turns a large beak pink/white and bit 7 a full tail, on yellow only
+-- (alone, or on other colors, they do nothing). Colors 5-7 have no model.
 local function look_props(l)
     if l.color == 'noble' then return 0 end
+    if raw then return raw end
     return bit.bor(l.beak and 0x01 or 0, l.talons and 0x08 or 0, l.tail and 0x40 or 0,
-        bit.lshift(COLORS[l.color] or 0, 9))
+        bit.lshift(COLORS[l.color] or 0, 9), l.color == 'pink' and 0x82 or 0)
 end
 
 -- Swaps rewrite a raptor into what the server sends for a chocobo with look l.
@@ -167,6 +172,10 @@ do
     p = pkt{ [0x0A] = 0x04, [0x1F] = 85, [0x20] = 0x61, [0x44] = 0x23 }
     swap_pc(p, { color = 'black', beak = true, tail = true })
     assert(p[0x20] == 0x41 and p[0x34] == 0x41 and p[0x35] == 0x02 and p[0x38] == 0, 'swap_pc: look not applied')
+    -- Pink: yellow body, beak + tail with their pink bits = 0xC3.
+    p = pkt{ [0x0A] = 0x04, [0x1F] = 85, [0x20] = 0x61, [0x44] = 0x23 }
+    swap_pc(p, { color = 'pink', beak = true, tail = true })
+    assert(p[0x34] == 0xC3 and p[0x35] == 0, 'swap_pc: pink not applied')
     -- Noble: mount 34 (0x22) split across 0x44/0x45, ChocoboIndex 4, CustomProperties { 0, 1 } even with parts set.
     local noble = { color = 'noble', beak = true }
     p = pkt{ [0x0A] = 0x04, [0x1F] = 85, [0x20] = 0x61, [0x44] = 0x23 }
@@ -289,6 +298,9 @@ ashita.events.register('d3d_present', 'present_cb', function ()
                 settings.save()
             end
             if s ~= sel then imgui.PopStyleColor() end
+            if s == 'pink' and imgui.IsItemHovered() then
+                imgui.SetTooltip('Yellow, with a pink/white beak and tail.\nTurn on Large beak and Full tail to see them.')
+            end
         end
         -- ImGui 1.80 has no BeginDisabled: fade each checkbox and drop its clicks instead.
         -- The fade is popped before the tooltip so the tooltip draws normally.
@@ -338,8 +350,14 @@ ashita.events.register('command', 'command_cb', function (e)
         if not COLORS[look.color] then
             msg = ('%s %s, saved for when you pick a color.'):format(label(arg), look[arg] and 'on' or 'off')
         end
+    elseif arg == 'raw' then
+        -- '/choco raw 0x080' (hex or decimal); '/choco raw off' clears it.
+        raw = tonumber(args[3] or '')
+        msg = raw and ('Raw 0x%03X: head %d, feet %d, tail %d, color %d. Remount to see it.'):format(raw,
+            bit.band(raw, 7), bit.band(bit.rshift(raw, 3), 7), bit.band(bit.rshift(raw, 6), 7),
+            bit.band(bit.rshift(raw, 9), 7)) or 'Raw off.'
     else
-        msg = 'Usage: /choco [yellow|black|blue|red|green|noble|random|beak|talons|tail]'
+        msg = 'Usage: /choco [yellow|black|blue|red|green|pink|noble|random|beak|talons|tail|raw <n>]'
     end
     msg = msg or ('Look: %s. Shows from the next mount or zone.'):format(look_text())
     print(chat.header(addon.name):append(chat.message(msg)))
