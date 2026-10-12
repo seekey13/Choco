@@ -26,7 +26,7 @@ local MOUNTED_BUFF = 252
 local GRAY = { 0.3, 0.3, 0.3, 1.0 } -- unpicked swatches; the picked one keeps the default button color
 local LOCKED = {
     noble  = 'The Noble Chocobo has one fixed look.\nThe game ignores beak, talons and tail on it.',
-    random = 'Random rolls the color, beak, talons and tail\nfresh for every packet.',
+    random = 'Random rolls the color, beak, talons and tail\nfresh for every ride.',
 }
 
 -- color is the top-row pick: a color, 'noble' or 'random'.
@@ -35,16 +35,20 @@ settings.register('settings', 'settings_update', function (s) look = s end)
 
 -- 0x00A (zone-in) carries our status but no mount id, so remember it from 0x037.
 local on_raptor = false
-local sync = nil       -- last real 0x067 about us, replayed on mount (server only sends it at zone-in)
-local mine = nil       -- look our last 0x037 got; our 0x067 reuses it so the two agree
+local sync = nil       -- this zone's real 0x067 about us, replayed on mount (server only sends it at zone-in)
+-- Looks are set once per ride, so a rider never changes look partway.
+local ride = nil       -- ours: 0x037 and 0x067 both use it
+local rides = {}       -- Random only: each other rider's roll, by server id
 local ui_open = { false }
 
 -- LuaJIT starts every session on the same seed.
 math.randomseed(os.time())
 
--- The look to write into one packet: the saved one, or a fresh roll when Random is on.
-local function active_look()
-    if look.color ~= 'random' then return look end
+-- A look for one ride: a copy of the saved one, or a fresh roll when Random is on.
+local function new_look()
+    if look.color ~= 'random' then
+        return { color = look.color, beak = look.beak, talons = look.talons, tail = look.tail }
+    end
     return { color = SWATCHES[math.random(2, #SWATCHES)],
         beak = math.random(2) == 1, talons = math.random(2) == 1, tail = math.random(2) == 1 }
 end
@@ -60,6 +64,10 @@ end
 -- Swaps rewrite a raptor into what the server sends for a chocobo with look l.
 -- They edit a 0-based byte view in place (ffi uint8_t* in game, plain table in the self-check).
 -- Offsets: https://github.com/atom0s/XiPackets world/server/0x000A, 0x000D, 0x0037, 0x0067
+
+local function get32(p, offset)
+    return p[offset] + p[offset + 1] * 0x100 + p[offset + 2] * 0x10000 + p[offset + 3] * 0x1000000
+end
 
 local function put32(p, offset, v)
     for i = 0, 3 do p[offset + i] = bit.band(bit.rshift(v, 8 * i), 0xFF) end
@@ -107,8 +115,32 @@ local function swap_self(p, l)
 end
 
 -- 0x00A zone-in: status 0x1F. Mounts survive zoning, and this lands before the next 0x037.
+-- A new zone starts every ride over, and the old zone's 0x067 must not be replayed into it.
 local function swap_zone_in(p)
     if on_raptor and p[0x1F] == STATUS_MOUNT then p[0x1F] = STATUS_CHOCOBO end
+    ride, rides, sync = nil, {}, nil
+end
+
+-- 0x00D: the look for this rider. Under Random each rider (server id 0x04) keeps one roll
+-- until a General update shows them off the mount.
+local function rider_look(p)
+    if look.color ~= 'random' or bit.band(p[0x0A], 0x04) == 0 then return look end
+    local id = get32(p, 0x04)
+    if p[0x1F] ~= STATUS_MOUNT then
+        rides[id] = nil
+        return look
+    end
+    rides[id] = rides[id] or new_look()
+    return rides[id]
+end
+
+-- 0x037 with our ride's look. Returns true when a ride just started, so its look needs replaying.
+local function ride_self(p)
+    local fresh = ride == nil
+    ride = ride or new_look()
+    swap_self(p, ride)
+    if not on_raptor then ride = nil end
+    return on_raptor and fresh
 end
 
 -- ponytail: self-check at load; fake packets, 0-based like the ffi view.
@@ -155,11 +187,33 @@ do
     local saved, seen = look, {}
     look = { color = 'random' }
     for _ = 1, 200 do
-        local l = active_look()
-        assert(COLORS[l.color] or l.color == 'noble', 'active_look: bad roll')
+        local l = new_look()
+        assert(COLORS[l.color] or l.color == 'noble', 'new_look: bad roll')
         seen[l.color] = true
     end
-    assert(seen.noble and seen.yellow and seen.green, 'active_look: rolls not spread')
+    assert(seen.noble and seen.yellow and seen.green, 'new_look: rolls not spread')
+    -- Our ride keeps the look it mounted with, even when the saved one changes mid-ride.
+    look = { color = 'black' }
+    assert(ride_self(pkt{ [0x29] = 0x65, [0x30] = 85, [0x5B] = 2 }), 'ride_self: mount not replayed')
+    look.color = 'noble'
+    p = pkt{ [0x29] = 0x65, [0x30] = 85, [0x5B] = 2 }
+    assert(not ride_self(p) and p[0x5B] == CHOCOBO and p[0x29] == 0x45, 'ride_self: look changed mid-ride')
+    ride_self(pkt{})
+    assert(ride == nil, 'ride_self: dismount kept the ride')
+    -- Random: each other rider keeps one roll until they get off.
+    look = { color = 'random' }
+    local a = pkt{ [0x04] = 1, [0x0A] = 0x04, [0x1F] = 85 }
+    local ra = rider_look(a)
+    assert(rider_look(a) == ra and rider_look(pkt{ [0x04] = 2, [0x0A] = 0x04, [0x1F] = 85 }) ~= ra,
+        'rider_look: not one roll per rider')
+    a[0x1F] = 0
+    rider_look(a)
+    a[0x1F] = 85
+    assert(rider_look(a) ~= ra, 'rider_look: dismount kept the roll')
+    -- Zoning starts every ride over and drops the old zone's 0x067.
+    ride, sync = {}, ''
+    swap_zone_in(pkt{})
+    assert(ride == nil and sync == nil and next(rides) == nil, 'swap_zone_in: rides kept')
     look, on_raptor = saved, false
 end
 
@@ -179,13 +233,10 @@ end
 ashita.events.register('packet_in', 'packet_in_cb', function (e)
     if e.blocked then return end
     if e.id == 0x00D and e.size >= 0x48 then
-        swap_pc(ffi.cast('uint8_t*', e.data_modified_raw), active_look())
+        local p = ffi.cast('uint8_t*', e.data_modified_raw)
+        swap_pc(p, rider_look(p))
     elseif e.id == 0x037 and e.size >= 0x5C then
-        -- One roll for our status, its replayed look and our next real 0x067, so they agree.
-        local was = on_raptor
-        mine = active_look()
-        swap_self(ffi.cast('uint8_t*', e.data_modified_raw), mine)
-        if on_raptor and (not was or look.color == 'random') then replay_sync(mine) end
+        if ride_self(ffi.cast('uint8_t*', e.data_modified_raw)) then replay_sync(ride) end
     elseif e.id == 0x00A and e.size >= 0x20 then
         swap_zone_in(ffi.cast('uint8_t*', e.data_modified_raw))
     elseif e.id == 0x067 and e.size >= 0x20 then
@@ -194,7 +245,10 @@ ashita.events.register('packet_in', 'packet_in_cb', function (e)
         local p = ffi.cast('uint8_t*', e.data_modified_raw)
         if e.injected or bit.band(p[0x04], 0x3F) ~= 2 or ffi.cast('uint32_t*', p + 0x08)[0] ~= my_id() then return end
         sync = ffi.string(e.data_raw, e.size)
-        if on_raptor then put_look(p, 0x18, mine) end
+        if on_raptor then
+            ride = ride or new_look() -- zone-in can land before the 0x037 that would set it
+            put_look(p, 0x18, ride)
+        end
     end
 end)
 
@@ -280,6 +334,10 @@ ashita.events.register('command', 'command_cb', function (e)
     elseif arg == 'beak' or arg == 'talons' or arg == 'tail' then
         look[arg] = not look[arg]
         settings.save()
+        -- Noble and Random ignore parts; the window locks them, so say where this one went.
+        if not COLORS[look.color] then
+            msg = ('%s %s, saved for when you pick a color.'):format(label(arg), look[arg] and 'on' or 'off')
+        end
     else
         msg = 'Usage: /choco [yellow|black|blue|red|green|noble|random|beak|talons|tail]'
     end
